@@ -2,16 +2,12 @@ import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.
 const $ = (id) => document.getElementById(id);
 const input = $('file-input');
 const dropzone = $('dropzone');
-const ffmpeg = new FFmpeg();
 const queue = [];
+const MAX_PARALLEL = 2;
+const activeEncoders = new Set();
 let previewUrl = null;
 let busy = false;
 let cancelRequested = false;
-let ffmpegReady = false;
-let lastFfmpegLog = '';
-let currentItem = null;
-let batchIndex = 0;
-let batchTotal = 0;
 
 const fmtBytes = (n) => {
   if (!Number.isFinite(n) || n < 0) return '—';
@@ -43,7 +39,7 @@ function renderQueue() {
   $('queue-list').classList.toggle('hidden', queue.length === 0);
   $('file-name').textContent = `${queue.length} วิดีโอในคิว`;
   const total = queue.reduce((sum, item) => sum + item.file.size, 0);
-  $('file-meta').textContent = `${fmtBytes(total)} รวม · ทำงานทีละไฟล์`;
+  $('file-meta').textContent = `${fmtBytes(total)} รวม · ทำพร้อมกันสูงสุด ${MAX_PARALLEL} ไฟล์`;
   $('queue-list').replaceChildren(...queue.map(item => {
     const row = document.createElement('div'); row.className = 'queue-item';
     const name = document.createElement('span'); name.className = 'queue-item-name'; name.textContent = item.file.name;
@@ -117,22 +113,24 @@ quality.addEventListener('input', () => {
 quality.addEventListener('change', syncQualityControl);
 syncQualityControl();
 
-ffmpeg.on('progress', ({ progress, time }) => {
-  if (!busy || !Number.isFinite(progress) || !currentItem) return;
-  const total = Math.max(1, batchTotal);
-  const pct = Math.min(99, Math.max(1, Math.round(((batchIndex + progress) / total) * 100)));
+function updateBatchProgress() {
+  const items = queue.filter(item => item.batchId === activeBatchId);
+  if (!items.length) return;
+  const progress = items.reduce((sum, item) => sum + (item.progress || 0), 0) / items.length;
+  const pct = Math.min(99, Math.round(progress * 100));
   $('progress-bar').style.width = `${pct}%`;
   $('progress-percent').textContent = `${pct}%`;
-  if (time > 0) $('progress-detail').textContent = `กำลังเข้ารหัส · ${Math.round(time / 1000000)} วินาที`;
-});
-ffmpeg.on('log', ({ message }) => {
-  if (message) lastFfmpegLog = message;
-  if (message?.includes('frame=') && busy) $('progress-status').textContent = 'กำลังบีบอัดวิดีโอ…';
-});
+  const active = items.filter(item => item.status === 'กำลังทำ').length;
+  $('progress-status').textContent = `กำลังบีบอัด ${active} ไฟล์พร้อมกัน`;
+  const finished = items.filter(item => ['เสร็จแล้ว', 'ผิดพลาด'].includes(item.status)).length;
+  $('progress-detail').textContent = `${finished} จาก ${items.length} ไฟล์เสร็จแล้ว · ทำพร้อมกันสูงสุด ${MAX_PARALLEL} ไฟล์`;
+}
 
-async function ensureEngine() {
-  if (ffmpegReady) return;
-  $('progress-status').textContent = 'กำลังดาวน์โหลดตัวเข้ารหัสครั้งแรก…';
+let activeBatchId = null;
+
+async function ensureEngine(engine, item) {
+  item.progress = 0.02;
+  updateBatchProgress();
   const packageBase = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
   // This is imported by ffmpeg.wasm's module worker, so use the ESM core build.
   const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
@@ -146,14 +144,13 @@ async function ensureEngine() {
     let workerSource = await workerResponse.text();
     workerSource = workerSource.replace(/(['"])(\.\/[A-Za-z0-9._-]+\.js)\1/g, (_match, quote, path) => `${quote}${packageBase}/${path.slice(2)}${quote}`);
     workerBlobUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
-    await ffmpeg.load({
+    await engine.load({
       classWorkerURL: workerBlobUrl,
       // Keep core and WASM on their CDN URLs: importing a core script through a
       // blob URL from inside a module worker fails in some browsers.
       coreURL: `${base}/ffmpeg-core.js`,
       wasmURL: `${base}/ffmpeg-core.wasm`
     });
-    ffmpegReady = true;
   } finally {
     if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl);
   }
@@ -170,7 +167,7 @@ function addResult(item) {
   info.append(name, details); row.append(info, link); $('results-list').append(row);
 }
 
-function showCompressionError(err) {
+function showCompressionError(err, log = '') {
   const message = String(err?.message || err);
   if (/memory|OOM|allocate|out of memory|cannot enlarge/i.test(message)) {
     return 'หน่วยความจำของเบราว์เซอร์ไม่พอ ลองปิดแท็บอื่น ใช้ไฟล์เล็กลง หรือลดความละเอียดก่อนบีบอัด';
@@ -181,7 +178,63 @@ function showCompressionError(err) {
   if (/fetch|network|load|http|wasm|failed to|โหลด worker/i.test(message)) {
     return `โหลดตัวเข้ารหัสไม่สำเร็จ: ${message.slice(0, 180)} ตรวจอินเทอร์เน็ตหรือ CDN แล้วลองอีกครั้ง`;
   }
-  return `บีบอัดไม่สำเร็จ: ${message.slice(0, 200)}${lastFfmpegLog && !message.includes(lastFfmpegLog) ? ` · ${lastFfmpegLog.slice(0, 120)}` : ''}`;
+  return `บีบอัดไม่สำเร็จ: ${message.slice(0, 200)}${log && !message.includes(log) ? ` · ${log.slice(0, 120)}` : ''}`;
+}
+
+async function processItem(item, index, total) {
+  const engine = new FFmpeg();
+  let inputMounted = false;
+  let outputPath = '';
+  let itemLog = '';
+  activeEncoders.add(engine);
+  item.status = 'กำลังทำ';
+  item.progress = 0;
+  engine.on('progress', ({ progress }) => {
+    if (Number.isFinite(progress)) {
+      item.progress = Math.max(item.progress || 0, Math.min(0.96, progress * 0.96));
+      updateBatchProgress();
+    }
+  });
+  engine.on('log', ({ message }) => { if (message) itemLog = message; });
+  renderQueue();
+  updateBatchProgress();
+  try {
+    await ensureEngine(engine, item);
+    if (cancelRequested) return;
+    await engine.createDir('/input');
+    await engine.mount('WORKERFS', { files: [item.file] }, '/input');
+    inputMounted = true;
+    const safeName = item.file.name.replace(/[\\/]/g, '_') || 'video-input';
+    const inputPath = `/input/${safeName}`;
+    outputPath = `output-${index}-${Date.now()}.mp4`;
+    const q = qualityData[Number(quality.value)];
+    const args = ['-i',inputPath,'-map','0:v:0'];
+    if ($('keep-audio').checked) args.push('-map','0:a?'); else args.push('-an');
+    if ($('resize').checked) args.push('-vf','scale=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2');
+    args.push('-c:v','libx264','-preset',q.preset,'-crf',q.crf,'-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart','-metadata','comment=Compressed locally with Frame',outputPath);
+    const exitCode = await engine.exec(args);
+    if (cancelRequested) return;
+    if (exitCode !== 0) throw new Error(`FFmpeg หยุดทำงาน (รหัส ${exitCode})${itemLog ? `: ${itemLog}` : ''}`);
+    const data = await engine.readFile(outputPath);
+    if (!data?.length) throw new Error('ไฟล์ผลลัพธ์ว่างเปล่า');
+    const blob = new Blob([data], { type: 'video/mp4' });
+    item.outputUrl = URL.createObjectURL(blob); item.outputSize = blob.size;
+    item.status = 'เสร็จแล้ว'; item.progress = 1;
+    $('result-card').classList.remove('hidden'); addResult(item);
+  } catch (err) {
+    if (cancelRequested) return;
+    console.error(err);
+    item.status = 'ผิดพลาด'; item.progress = 1; item.error = showCompressionError(err, itemLog);
+    showError(`${item.file.name}: ${item.error}`);
+    const row = document.createElement('div'); row.className = 'result-item result-item-error'; row.textContent = `${item.file.name}: ${item.error}`; $('results-list').append(row); $('result-card').classList.remove('hidden');
+  } finally {
+    if (outputPath) await engine.deleteFile(outputPath).catch(() => {});
+    if (inputMounted) { await engine.unmount('/input').catch(() => {}); await engine.deleteDir('/input').catch(() => {}); }
+    activeEncoders.delete(engine);
+    try { await engine.terminate(); } catch {}
+    if (cancelRequested && item.status === 'กำลังทำ') item.status = 'ยกเลิก';
+    renderQueue(); updateBatchProgress();
+  }
 }
 
 $('compress').addEventListener('click', async () => {
@@ -189,59 +242,23 @@ $('compress').addEventListener('click', async () => {
   const pending = queue.filter(item => item.status === 'รอคิว');
   if (!pending.length) return;
   clearError(); busy = true; cancelRequested = false;
-  batchTotal = pending.length;
+  activeBatchId = `${Date.now()}-${Math.random()}`;
+  pending.forEach(item => { item.batchId = activeBatchId; item.progress = 0; });
   $('compress').disabled = true; $('button-label').textContent = 'กำลังบีบอัด…';
   $('cancel').disabled = false; $('cancel').textContent = 'ยกเลิก';
   $('progress-panel').classList.remove('hidden'); $('progress-bar').style.width = '0%'; $('progress-percent').textContent = '0%';
-  $('progress-status').textContent = 'กำลังเตรียมคิว…'; $('progress-detail').textContent = `${pending.length} ไฟล์จะประมวลผลทีละไฟล์`;
+  $('progress-status').textContent = 'กำลังเตรียมคิว…'; $('progress-detail').textContent = `${pending.length} ไฟล์ · ทำพร้อมกันสูงสุด ${MAX_PARALLEL} ไฟล์`;
   renderQueue();
-  for (let index = 0; index < pending.length; index++) {
-    const item = pending[index];
-    if (cancelRequested) break;
-    currentItem = item; batchIndex = index; item.status = 'กำลังทำ'; lastFfmpegLog = '';
-    renderQueue();
-    $('progress-status').textContent = `กำลังเตรียมไฟล์ ${index + 1} จาก ${pending.length}`;
-    $('progress-detail').textContent = item.file.name;
-    $('progress-percent').textContent = `${Math.round((index / pending.length) * 100)}%`;
-    $('progress-bar').style.width = `${Math.round((index / pending.length) * 100)}%`;
-    let inputMounted = false;
-    let outputPath = '';
-    try {
-      await ensureEngine();
-      if (cancelRequested) break;
-      await ffmpeg.createDir('/input');
-      await ffmpeg.mount('WORKERFS', { files: [item.file] }, '/input');
-      inputMounted = true;
-      const safeName = item.file.name.replace(/[\\/]/g, '_') || 'video-input';
-      const inputPath = `/input/${safeName}`;
-      outputPath = `output-${index}-${Date.now()}.mp4`;
-      const q = qualityData[Number(quality.value)];
-      const args = ['-i',inputPath,'-map','0:v:0'];
-      if ($('keep-audio').checked) args.push('-map','0:a?'); else args.push('-an');
-      if ($('resize').checked) args.push('-vf','scale=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2');
-      args.push('-c:v','libx264','-preset',q.preset,'-crf',q.crf,'-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart','-metadata','comment=Compressed locally with Frame',outputPath);
-      $('progress-status').textContent = `กำลังบีบอัดไฟล์ ${index + 1} จาก ${pending.length}`;
-      const exitCode = await ffmpeg.exec(args);
-      if (cancelRequested) { item.status = 'ยกเลิก'; break; }
-      if (exitCode !== 0) throw new Error(`FFmpeg หยุดทำงาน (รหัส ${exitCode})${lastFfmpegLog ? `: ${lastFfmpegLog}` : ''}`);
-      const data = await ffmpeg.readFile(outputPath);
-      if (!data?.length) throw new Error('ไฟล์ผลลัพธ์ว่างเปล่า');
-      const blob = new Blob([data], { type: 'video/mp4' });
-      item.outputUrl = URL.createObjectURL(blob); item.outputSize = blob.size; item.status = 'เสร็จแล้ว';
-      $('result-card').classList.remove('hidden'); addResult(item);
-    } catch (err) {
-      console.error(err);
-      if (cancelRequested) { item.status = 'ยกเลิก'; break; }
-      item.status = 'ผิดพลาด'; item.error = showCompressionError(err);
-      showError(`${item.file.name}: ${item.error}`);
-      const row = document.createElement('div'); row.className = 'result-item result-item-error'; row.textContent = `${item.file.name}: ${item.error}`; $('results-list').append(row); $('result-card').classList.remove('hidden');
-    } finally {
-      if (outputPath) await ffmpeg.deleteFile(outputPath).catch(() => {});
-      if (inputMounted && ffmpegReady) { await ffmpeg.unmount('/input').catch(() => {}); await ffmpeg.deleteDir('/input').catch(() => {}); }
+  let nextIndex = 0;
+  const runWorker = async () => {
+    while (!cancelRequested) {
+      const index = nextIndex++;
+      if (index >= pending.length) return;
+      await processItem(pending[index], index, pending.length);
     }
-    renderQueue();
-  }
-  currentItem = null; busy = false;
+  };
+  await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, pending.length) }, runWorker));
+  busy = false;
   const completed = pending.filter(item => item.status === 'เสร็จแล้ว').length;
   const failed = pending.filter(item => item.status === 'ผิดพลาด').length;
   if (cancelRequested) {
@@ -250,15 +267,14 @@ $('compress').addEventListener('click', async () => {
     $('progress-status').textContent = 'ประมวลผลคิวเสร็จแล้ว'; $('progress-detail').textContent = `${completed} สำเร็จ${failed ? ` · ${failed} ผิดพลาด` : ''}`;
     $('progress-bar').style.width = '100%'; $('progress-percent').textContent = '100%';
   }
+  activeBatchId = null;
   $('cancel').textContent = 'ปิด'; $('cancel').disabled = false; renderQueue();
 });
 
 $('cancel').addEventListener('click', async () => {
   if (!busy) { $('progress-panel').classList.add('hidden'); return; }
   cancelRequested = true; $('progress-status').textContent = 'กำลังหยุดงาน…'; $('cancel').disabled = true;
-  try { await ffmpeg.terminate(); } catch {}
-  ffmpegReady = false;
-  // The queue loop handles the terminated FFmpeg promise and restores controls.
+  await Promise.all([...activeEncoders].map(engine => engine.terminate().catch(() => {})));
 });
 
 window.addEventListener('beforeunload', () => {
