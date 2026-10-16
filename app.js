@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const input = $('file-input');
 const dropzone = $('dropzone');
 const queue = [];
-const MAX_PARALLEL = 2;
+const MAX_PARALLEL = 3;
 const activeEncoders = new Set();
 let previewUrl = null;
 let busy = false;
@@ -41,15 +41,19 @@ function renderQueue() {
   const total = queue.reduce((sum, item) => sum + item.file.size, 0);
   $('file-meta').textContent = `${fmtBytes(total)} รวม · ทำพร้อมกันสูงสุด ${MAX_PARALLEL} ไฟล์`;
   $('queue-list').replaceChildren(...queue.map(item => {
-    const row = document.createElement('div'); row.className = 'queue-item';
+    const row = document.createElement('div'); row.className = 'queue-item'; row.dataset.queueId = item.id;
+    const top = document.createElement('div'); top.className = 'queue-item-top';
     const name = document.createElement('span'); name.className = 'queue-item-name'; name.textContent = item.file.name;
     const size = document.createElement('span'); size.className = 'queue-item-size'; size.textContent = fmtBytes(item.file.size);
     const status = document.createElement('span'); status.className = `queue-item-status${item.status === 'เสร็จแล้ว' ? ' done' : item.status === 'ผิดพลาด' ? ' error' : ''}`; status.textContent = item.status;
-    row.append(name, size, status); return row;
+    const track = document.createElement('div'); track.className = 'queue-item-progress';
+    const fill = document.createElement('i'); fill.style.width = `${Math.round((item.progress || 0) * 100)}%`;
+    if (item.status === 'เสร็จแล้ว') fill.style.width = '100%';
+    track.append(fill); top.append(name, size, status); row.append(top, track); return row;
   }));
   const pending = queue.filter(item => item.status === 'รอคิว').length;
   $('compress').disabled = busy || pending === 0;
-  $('button-label').textContent = busy ? 'กำลังบีบอัด…' : pending ? `บีบอัด ${pending} ไฟล์` : 'เลือกวิดีโอเพื่อเริ่ม';
+  $('button-label').textContent = busy ? `กำลังบีบอัด (พร้อมกันสูงสุด ${MAX_PARALLEL} ไฟล์)…` : pending ? `บีบอัด ${pending} ไฟล์ (พร้อมกันสูงสุด ${MAX_PARALLEL})` : 'เลือกวิดีโอเพื่อเริ่ม';
 }
 
 function addFiles(files) {
@@ -116,6 +120,11 @@ syncQualityControl();
 function updateBatchProgress() {
   const items = queue.filter(item => item.batchId === activeBatchId);
   if (!items.length) return;
+  for (const item of items) {
+    const row = [...$('queue-list').children].find(node => node.dataset.queueId === item.id);
+    const fill = row?.querySelector('.queue-item-progress i');
+    if (fill) fill.style.width = `${Math.round((item.progress || 0) * 100)}%`;
+  }
   const progress = items.reduce((sum, item) => sum + (item.progress || 0), 0) / items.length;
   const pct = Math.min(99, Math.round(progress * 100));
   $('progress-bar').style.width = `${pct}%`;
