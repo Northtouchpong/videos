@@ -28,17 +28,18 @@
       <div class="panel">
         <div class="panel-head"><span class="step">01</span><div><h2>เลือกวิดีโอ</h2><p>ไฟล์จะอยู่ในอุปกรณ์ของคุณตลอดเวลา</p></div></div>
         <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="เลือกหรือลากไฟล์วิดีโอ">
-          <input id="file-input" type="file" accept="video/*,.mkv,.mov,.avi,.webm,.mp4" aria-label="เลือกไฟล์วิดีโอ">
+          <input id="file-input" type="file" accept="video/*,.mkv,.mov,.avi,.webm,.mp4" aria-label="เลือกไฟล์วิดีโอ" multiple>
           <span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15.5v3A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-3"/></svg></span>
           <strong>วางไฟล์วิดีโอที่นี่</strong>
-          <span class="drop-sub">หรือ <button class="browse-button" id="browse-file" type="button">เลือกไฟล์จากอุปกรณ์</button></span>
+          <span class="drop-sub">เลือกได้หลายไฟล์ หรือ <button class="browse-button" id="browse-file" type="button">เลือกไฟล์จากอุปกรณ์</button></span>
           <span class="file-hint">MP4, MOV, MKV, WEBM และรูปแบบวิดีโออื่น ๆ</span>
         </div>
         <div class="file-card hidden" id="file-card">
           <span class="file-icon"><svg viewBox="0 0 24 24"><path d="M5 3.75h9l5 5v11.5H5zM14 4v5h5M8 14h8M8 17h5"/></svg></span>
-          <span class="file-details"><strong id="file-name">video.mp4</strong><span id="file-meta">—</span></span>
-          <button class="icon-button" id="remove-file" type="button" aria-label="นำไฟล์ออก">×</button>
+          <span class="file-details"><strong id="file-name">0 วิดีโอ</strong><span id="file-meta">ยังไม่มีไฟล์ในคิว</span></span>
+          <button class="icon-button" id="remove-file" type="button" aria-label="ล้างคิววิดีโอ">×</button>
         </div>
+        <div class="queue-list hidden" id="queue-list" aria-live="polite"></div>
 
         <div class="settings" id="settings">
           <div class="settings-title"><span class="step">02</span><div><h2>ตั้งค่าการบีบอัด</h2><p>ค่าที่เลือกมีผลต่อขนาดและความคมชัด</p></div></div>
@@ -47,12 +48,14 @@
           <div class="range-labels"><span>ไฟล์เล็ก</span><span>คุณภาพสูง</span></div>
           <div class="quality-note" id="quality-note">แนะนำสำหรับวิดีโอเว็บไซต์ส่วนใหญ่</div>
           <div class="setting-divider"></div>
+          <label class="check-row audio-row"><input type="checkbox" id="keep-audio" checked><span class="check-custom"></span><span><strong>เก็บเสียงต้นฉบับ</strong><small>ปิดตัวเลือกนี้เพื่อตัดเสียงและลดขนาดไฟล์</small></span></label>
           <label class="check-row"><input type="checkbox" id="resize"><span class="check-custom"></span><span>ลดความละเอียดเป็น 1080p หากวิดีโอต้นฉบับใหญ่กว่า</span></label>
           <div class="format-row"><span>รูปแบบไฟล์</span><span class="format-pill">MP4 <span>·</span> H.264</span></div>
         </div>
 
         <button class="primary-button" id="compress" type="button" disabled><span id="button-label">เลือกวิดีโอเพื่อเริ่ม</span><svg viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
         <div class="engine-note"><span class="engine-dot"></span> ขับเคลื่อนโดย FFmpeg · ไฟล์ไม่ถูกอัปโหลด</div>
+        <p class="memory-note">อ่านไฟล์ต้นฉบับแบบแบ่งช่วงเพื่อลดการใช้หน่วยความจำ แต่ไฟล์ผลลัพธ์ยังขึ้นกับ RAM และข้อจำกัดของเบราว์เซอร์</p>
       </div>
 
       <aside class="side-column">
@@ -62,10 +65,8 @@
           <div class="preview-caption"><span id="preview-caption">ตัวอย่างวิดีโอจะแสดงที่นี่</span><span class="preview-time" id="duration-label">00:00</span></div>
         </div>
         <div class="result-card hidden" id="result-card">
-          <div class="result-top"><div><span class="result-kicker">COMPRESSION COMPLETE</span><h3>ไฟล์พร้อมดาวน์โหลด</h3></div><span class="success-mark">✓</span></div>
-          <div class="size-compare"><div><span>ก่อนบีบอัด</span><strong id="before-size">—</strong></div><span class="compare-arrow">→</span><div><span>หลังบีบอัด</span><strong id="after-size">—</strong></div></div>
-          <div class="saving-line"><span id="saving-text">—</span><span class="saving-track"><i id="saving-bar"></i></span></div>
-          <a class="download-button" id="download" download="video-compressed.mp4">ดาวน์โหลดวิดีโอ <svg viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 18v2h14v-2"/></svg></a>
+          <div class="result-top"><div><span class="result-kicker">COMPRESSION RESULTS</span><h3>ไฟล์พร้อมดาวน์โหลด</h3></div><span class="success-mark">✓</span></div>
+          <div class="results-list" id="results-list"></div>
         </div>
         <div class="info-card"><span class="info-icon">i</span><p><strong>เรื่องคุณภาพที่ควรรู้</strong><br>การบีบอัดช่วยลดขนาดไฟล์ แต่ไม่สามารถรับประกันว่าภาพจะเหมือนต้นฉบับทุกจุด ตั้งค่าคุณภาพสูงขึ้นเพื่อลดการสูญเสียรายละเอียด</p></div>
       </aside>
@@ -81,6 +82,6 @@
     <section class="how"><div class="how-title"><span class="eyebrow-line"></span> SIMPLE BY DESIGN</div><div class="how-grid"><div><span>01</span><h3>เลือกไฟล์</h3><p>เพิ่มวิดีโอที่ต้องการเตรียมลงเว็บไซต์</p></div><div><span>02</span><h3>เลือกคุณภาพ</h3><p>เลือกระดับที่เหมาะกับความคมชัดและขนาดไฟล์</p></div><div><span>03</span><h3>ดาวน์โหลด</h3><p>บันทึก MP4 ที่บีบอัดแล้วไปใช้งานได้เลย</p></div></div></section>
     <footer><a class="brand footer-brand" href="#"><span class="brand-mark">f<span>.</span></span><span>frame</span></a><span>Private by design. Your videos stay yours.</span><span class="footer-year">© FRAME VIDEO TOOLS</span></footer>
   </main>
-  <script type="module" src="app.js?v=20261016-4"></script>
+  <script type="module" src="app.js?v=20261016-6"></script>
 </body>
 </html>
