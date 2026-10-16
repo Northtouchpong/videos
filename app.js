@@ -1,5 +1,5 @@
 import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
-import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+import { fetchFile } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
 const $ = (id) => document.getElementById(id);
 const input = $('file-input');
@@ -122,8 +122,10 @@ async function ensureEngine() {
     workerBlobUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
     await ffmpeg.load({
       classWorkerURL: workerBlobUrl,
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm')
+      // Keep core and WASM on their CDN URLs: importing a core script through a
+      // blob URL from inside a module worker fails in some browsers.
+      coreURL: `${base}/ffmpeg-core.js`,
+      wasmURL: `${base}/ffmpeg-core.wasm`
     });
     ffmpegReady = true;
   } finally {
