@@ -11,6 +11,7 @@ let inputUrl = null;
 let busy = false;
 let cancelRequested = false;
 let ffmpegReady = false;
+let lastFfmpegLog = '';
 
 const fmtBytes = (n) => {
   if (!Number.isFinite(n) || n < 0) return '—';
@@ -100,23 +101,40 @@ ffmpeg.on('progress', ({ progress, time }) => {
   if (time > 0) $('progress-detail').textContent = `กำลังเข้ารหัส · ${Math.round(time / 1000000)} วินาที`;
 });
 ffmpeg.on('log', ({ message }) => {
+  if (message) lastFfmpegLog = message;
   if (message?.includes('frame=') && busy) $('progress-status').textContent = 'กำลังบีบอัดวิดีโอ…';
 });
 
 async function ensureEngine() {
   if (ffmpegReady) return;
-  $('progress-status').textContent = 'กำลังโหลดตัวเข้ารหัสครั้งแรก…';
-  const base = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-  await ffmpeg.load({
-    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm')
-  });
-  ffmpegReady = true;
+  $('progress-status').textContent = 'กำลังดาวน์โหลดตัวเข้ารหัสครั้งแรก…';
+  const packageBase = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
+  const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd';
+  let workerBlobUrl;
+  try {
+    // FFmpeg's module worker is normally resolved beside the CDN-hosted library.
+    // Fetch its entry source, rewrite relative imports to the same CDN, and launch
+    // a blob worker so cross-origin worker restrictions do not block the app.
+    const workerResponse = await fetch(`${packageBase}/worker.js`);
+    if (!workerResponse.ok) throw new Error(`โหลด worker ไม่สำเร็จ (${workerResponse.status})`);
+    let workerSource = await workerResponse.text();
+    workerSource = workerSource.replace(/(['"])(\.\/[A-Za-z0-9._-]+\.js)\1/g, (_match, quote, path) => `${quote}${packageBase}/${path.slice(2)}${quote}`);
+    workerBlobUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+    await ffmpeg.load({
+      classWorkerURL: workerBlobUrl,
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm')
+    });
+    ffmpegReady = true;
+  } finally {
+    if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl);
+  }
 }
 
 $('compress').addEventListener('click', async () => {
   if (!sourceFile || busy) return;
   clearError(); busy = true; cancelRequested = false;
+  lastFfmpegLog = '';
   $('compress').disabled = true; $('button-label').textContent = 'กำลังบีบอัด…';
   $('progress-panel').classList.remove('hidden'); $('progress-bar').style.width = '0%'; $('progress-percent').textContent = '0%';
   $('progress-status').textContent = 'กำลังเตรียมตัวเข้ารหัส…'; $('progress-detail').textContent = 'ครั้งแรกอาจใช้เวลาสักครู่เพื่อโหลดตัวเข้ารหัส';
@@ -132,8 +150,9 @@ $('compress').addEventListener('click', async () => {
     if ($('resize').checked) args.push('-vf','scale=w=1920:h=1080:force_original_aspect_ratio=decrease:force_divisible_by=2');
     args.push('-c:v','libx264','-preset',q.preset,'-crf',q.crf,'-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-movflags','+faststart','-metadata','comment=Compressed locally with Frame','output.mp4');
     $('progress-status').textContent = 'กำลังบีบอัดวิดีโอ…';
-    await ffmpeg.exec(args);
+    const exitCode = await ffmpeg.exec(args);
     if (cancelRequested) return;
+    if (exitCode !== 0) throw new Error(`FFmpeg หยุดทำงาน (รหัส ${exitCode})${lastFfmpegLog ? `: ${lastFfmpegLog}` : ''}`);
     const data = await ffmpeg.readFile('output.mp4');
     if (!data?.length) throw new Error('ไฟล์ผลลัพธ์ว่างเปล่า');
     const blob = new Blob([data], { type: 'video/mp4' });
@@ -153,9 +172,15 @@ $('compress').addEventListener('click', async () => {
     console.error(err);
     if (!cancelRequested) {
       const message = String(err?.message || err);
-      showError(message.includes('memory') || message.includes('OOM') || message.includes('allocate')
-        ? 'เบราว์เซอร์มีหน่วยความจำไม่พอสำหรับไฟล์นี้ ลองปิดแท็บอื่น ใช้ไฟล์ที่เล็กลง หรือลดความละเอียดวิดีโอก่อนบีบอัด'
-        : 'บีบอัดไม่สำเร็จ เบราว์เซอร์อาจไม่รองรับ codec ของไฟล์นี้ หรือหน่วยความจำไม่เพียงพอ ลองแปลงต้นฉบับเป็น MP4 แล้วเริ่มใหม่');
+      if (/memory|OOM|allocate|out of memory|cannot enlarge/i.test(message)) {
+        showError('หน่วยความจำของเบราว์เซอร์ไม่พอสำหรับไฟล์นี้ ลองปิดแท็บอื่น ใช้ไฟล์เล็กลง หรือลดความละเอียดก่อนบีบอัด');
+      } else if (/worker|cross-origin|securityerror|script at|failed to construct/i.test(message)) {
+        showError('เบราว์เซอร์บล็อก worker ของตัวเข้ารหัส ลองเปิดเว็บด้วย Chrome หรือ Edge เวอร์ชันล่าสุด และตรวจว่าเชื่อมต่ออินเทอร์เน็ตได้');
+      } else if (/fetch|network|load|http|wasm|failed to|โหลด worker/i.test(message)) {
+        showError(`โหลดตัวเข้ารหัสไม่สำเร็จ: ${message.slice(0, 220)} กรุณาตรวจการเชื่อมต่ออินเทอร์เน็ตหรือ CDN แล้วลองอีกครั้ง`);
+      } else {
+        showError(`บีบอัดไม่สำเร็จ: ${message.slice(0, 260)}${lastFfmpegLog && !message.includes(lastFfmpegLog) ? ` · ${lastFfmpegLog.slice(0, 140)}` : ''}`);
+      }
     }
   } finally {
     busy = false; $('compress').disabled = !sourceFile; $('button-label').textContent = sourceFile ? 'บีบอัดอีกครั้ง' : 'เลือกวิดีโอเพื่อเริ่ม';
