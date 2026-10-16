@@ -109,7 +109,8 @@ async function ensureEngine() {
   if (ffmpegReady) return;
   $('progress-status').textContent = 'กำลังดาวน์โหลดตัวเข้ารหัสครั้งแรก…';
   const packageBase = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
-  const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd';
+  // This is imported by ffmpeg.wasm's module worker, so use the ESM core build.
+  const base = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
   let workerBlobUrl;
   try {
     // FFmpeg's module worker is normally resolved beside the CDN-hosted library.
